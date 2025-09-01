@@ -1,0 +1,14 @@
+== summary ==
+records=32368 size=1294720B
+counts: malloc=15806 free=16333 realloc=34 calloc=195
+total malloc=8.03MB calloc=7.32KB realloc(new)=1.43KB freed=7.85MB
+live=192.00KB in 4 blocks  (min-size filter: >= 0B)
+span=237.391s
+
+== leaks (unfreed blocks) [ALL] ==
+   1) size=191.67KB  ptr=0x00000000b3500008  tid=642  ra=0x000000000007653f  ts_ns=19261055835
+   2) size=256.00B  ptr=0x00000000b4603d68  tid=663  ra=0x00000000000a370f  ts_ns=21966450835
+   3) size=64.00B  ptr=0x00000000b465a168  tid=657  ra=0x000000000008dded  ts_ns=32585896336
+   4) size=12.00B  ptr=0x00000000b34b1f88  tid=642  ra=0x00000000000765e9  ts_ns=19291118668
+
+Hint: addr2line -e <elf> 0xRETADDR   # map ra to source:line
