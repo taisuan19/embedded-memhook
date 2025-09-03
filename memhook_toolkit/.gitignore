@@ -1,0 +1,39 @@
+# 编译产物
+bin/
+*.o
+*.obj
+*.exe
+*.out
+*.a
+*.so
+*.dll
+*.dylib
+
+# 构建缓存
+*.dSYM/
+*.pch
+*.tmp
+*.swp
+*.swo
+*.bak
+*.log
+
+# 运行数据文件（输入/输出）
+logs/
+out/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE / 编辑器文件
+.vscode/
+.idea/
+*.iml
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini

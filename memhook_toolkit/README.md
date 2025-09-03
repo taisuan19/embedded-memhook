@@ -1,69 +1,159 @@
-# Embedded Memhook / 内存泄漏追踪工具
+# memhook_toolkit
 
-## 📖 Overview / 简介
-**Embedded Memhook** is a lightweight **memory leak tracking framework** designed for C/C++ projects and embedded Linux systems.  
-**Embedded Memhook** 是一个轻量级的 **内存泄漏追踪框架**，适用于 C/C++ 项目和嵌入式 Linux 系统。  
-
-It works by **intercepting `malloc/free`** calls, recording allocation information into a binary log file (`.bin`).  
-它通过 **拦截 `malloc/free`** 调用，把分配信息记录到二进制日志文件（`.bin`）中。  
-
-A dump utility can parse the log and generate **human-readable reports** (`.txt`, `.csv`) for leak analysis.  
-配套的 dump 工具可以解析日志，生成 **可读报告**（`.txt`, `.csv`），用于内存泄漏分析。  
+内存追踪分析工具链：解码 `memhook_xxx.bin` 二进制日志、生成汇总与泄漏信息、导出 CSV，并基于 CSV 做峰值与 TID/调用点分析。
 
 ---
 
-## 🚀 Quick Start / 快速开始
+## 📂 目录结构
+
+memhook_toolkit/
+├─ bin/ # 编译生成的二进制工具
+│ ├─ memhook_dump # 解码 .bin -> summary/leaks/csv
+│ └─ memhook_csv_analyze # 从 CSV 重放，输出峰值/TID/调用点/时间序列
+│
+├─ scripts/
+│ └─ gen_reports.sh # 自动化导出入口
+│
+├─ python/ # (可选) Python 脚本，扩展分析/画图
+│ ├─ analyze_peaks.py
+│ ├─ plot_timeseries.py
+│ ├─ compare_runs.py
+│ └─ utils.py
+│
+├─ src/
+│ └─ memhook_dump.c # 解码器源码
+│
+├─ tools/
+│ └─ memhook_csv_analyze.c # CSV 分析器源码
+│
+├─ logs/ # 存放运行时生成的追踪二进制文件 (.bin)
+│ ├─ memhook_001.bin
+│ └─ ...
+│
+├─ out/ # 导出的结果
+│ └─ memhook_001.bin/
+│ ├─ summary/summary.txt
+│ ├─ leaks/leaks.txt
+│ ├─ csv/records.csv
+│ └─ analysis/*.csv
+│
+├─ Makefile
+└─ README.md
+
+yaml
+复制代码
+
+---
+
+## ⚙️ 编译
+
+需要 GCC / Clang (C11):
+
 ```bash
-### 1. Build with linker wrap / 使用 `--wrap` 编译
-```bash
-gcc -Wl,--wrap=malloc -Wl,--wrap=free -o your_program your_program.c memhook.c
+make -j
+生成可执行文件：
 
-2.编译memhook_dump
-gcc -O2 memhook_dump.c -o memhook_dump
+bin/memhook_dump
 
-# 3. Dump and analyze logs / 转储并分析日志
-./memhook_dump memhook.bin > summary.txt
+bin/memhook_csv_analyze
 
-# 最常用：打印汇总 + 前20条泄漏（按size降序）
-./memhook_dump memhook.bin 2>summary.txt
+🚀 使用方法
+1. 准备数据
+把设备生成的内存追踪文件拷贝到 logs/：
 
-# 打印所有泄漏
-./memhook_dump memhook.bin --live-all 2>summary.txt
+bash
+复制代码
+logs/memhook_001.bin
+logs/memhook_002.bin
+2. 一键导出
+运行脚本：
 
-# 只看 >= 1024B 的泄漏，并导出逐条CSV
-./memhook_dump memhook.bin --min-size 1024 --csv records.csv 2>summary.txt
+bash
+复制代码
+scripts/gen_reports.sh --live-all --time-asc --peak memhook_001.bin
+脚本会在 out/memhook_001.bin/ 下生成：
 
-# 只看前50条最大泄漏
-./memhook_dump memhook.bin --live-top 50 2>summary.txt
+summary/summary.txt ：统计信息（malloc/free/峰值等）
 
+leaks/leaks.txt ：未释放内存列表
 
-Example Output / 示例输出
-== leaks (unfreed blocks) [ALL] ==
-1) size=128B   ptr=0x12345678  tid=1024  ra=0x08004567
-2) size=64B    ptr=0x23456789  tid=1024  ra=0x08004890
-Hint: addr2line -e <elf> 0xRETADDR   # map ra to source:line
+csv/records.csv ：逐条事件记录
 
-🛠️ Features / 特性
-Implemented with GNU Linker --wrap, no macro conflicts
-基于 GNU Linker --wrap，避免宏替换带来的问题
-Track malloc/free with minimal intrusion
-最小化代码侵入，业务代码无需修改
-Export binary logs, dump to text/CSV
-输出二进制日志，可转储为文本/CSV
-Compatible with C/C++ projects and embedded Linux
-兼容 C/C++ 项目及嵌入式 Linux 环境
+analysis/*.csv ：CSV 二次分析结果
 
+3. 常用参数
+--live-all ：导出全部未释放块（默认 top20）
 
+--time-asc ：leaks/summary 按时间升序
 
-# 1) 编译
-chmod +x scripts/build.sh scripts/gen_reports.sh
-scripts/build.sh
+--peak ：在 summary 中输出峰值内存和时间
 
-分析records.csv
-python3 csv_analyze_memhook.py  out/memhook_oom_572_up19273ms/csv/records.csv  --out out_report --downsample 200 --top 50 --approx-mem 2e6
+--min-size N ：过滤小于 N 字节的块
 
-按时间输出，summary和leaks
-scripts/gen_reports.sh --live-all --time-asc  memhook_oom_572_up19273ms.bin
+--approx-mem BYTES ：在 CSV 分析器中标记近似内存上限
 
-默认输出
-scripts/gen_reports.sh --live-all  memhook_oom_572_up19273ms.bin
+--no-csv ：只生成 summary/leaks，不生成 CSV
+
+--csv-top N ：CSV 分析输出排行 TOP N（默认 100）
+
+示例：
+
+bash
+复制代码
+scripts/gen_reports.sh --live-top 50 --peak --approx-mem 120000000 memhook_002.bin
+4. 批量导出
+支持通配符：
+
+bash
+复制代码
+scripts/gen_reports.sh --live-all --peak logs/memhook_*.bin
+📊 输出文件说明
+summary.txt
+
+总记录数
+
+malloc/free/calloc/realloc 次数
+
+总分配/释放字节数
+
+在存峰值 (--peak)
+
+时间跨度
+
+leaks.txt
+
+最终仍未释放的内存块
+
+包含大小、指针、tid、调用点、分配时间
+
+records.csv
+
+所有事件，含系统时间戳、tid、操作、指针、大小、返回地址
+
+analysis/
+
+overview.csv：整体峰值、首次超过 --approx-mem 时刻
+
+top_tids_by_peak.csv：线程在存峰值排行
+
+top_sites_by_peak.csv：调用点在存峰值排行
+
+live_blocks_at_end.csv：结束时仍存活的块
+
+timeseries_downsampled.csv：在存曲线抽样
+
+🛠️ 调试/开发
+用 addr2line -e <elf> 0xRETADDR 映射调用点到源码行。
+
+Python 脚本可选：python/analyze_peaks.py 等，用于可视化或进一步分析。
+
+📌 提示
+建议保持目录清晰：
+
+logs/ 只放原始 .bin 数据
+
+out/ 自动生成分析结果
+
+bin/ 只放可执行工具
+
+如果 summary 里“最晚未释放时间”停留在开机时刻，说明后来触发 OOM 的是瞬时峰值而不是长期泄漏；请结合 overview.csv 和 top_tids_by_peak.csv 定位原因。
