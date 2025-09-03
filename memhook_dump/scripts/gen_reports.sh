@@ -7,6 +7,7 @@ MIN_SIZE="0"
 LIVE_MODE="--live-top 20"   # 或者用 --live-all
 DO_CSV=1
 TOOL_DEFAULT="bin/memhook_dump"
+TIME_ASC=0                  # 新增：是否按时间升序导出（影响 leaks/summary；CSV 可选）
 
 usage() {
   cat <<EOF
@@ -19,11 +20,13 @@ Options:
   --live-top N        输出前 N 个最大泄漏 (默认 20)
   --no-csv            不生成 CSV（默认生成）
   --tool PATH         memhook_dump 可执行文件路径 (default: bin/memhook_dump)
+  --time-asc          按系统/分配时间升序导出（影响 leaks/summary；CSV 可选）
+  -h, --help          显示帮助
 
 Examples:
   $(basename "$0") memhook_*.bin
   $(basename "$0") --min-size 1024 --live-all memhook.bin
-  $(basename "$0") --out results --live-top 50 logs/memhook.bin
+  $(basename "$0") --out results --live-top 50 --time-asc logs/memhook.bin
 EOF
 }
 
@@ -38,6 +41,7 @@ while (($#)); do
     --live-top)   LIVE_MODE="--live-top ${2:-20}"; shift 2;;
     --no-csv)     DO_CSV=0; shift 1;;
     --tool)       TOOL="$2"; shift 2;;
+    --time-asc)   TIME_ASC=1; shift 1;;
     -h|--help)    usage; exit 0;;
     --) shift; break;;
     -*) echo "Unknown option: $1" >&2; usage; exit 1;;
@@ -58,13 +62,20 @@ if [[ ! -x "$TOOL" ]]; then
   exit 1
 fi
 
-# 运行时检测是否支持 --leak-out
+# 运行时检测是否支持 --leak-out（老版本可能没有）
 HAS_LEAK_OUT=0
 if "$TOOL" --help 2>&1 | grep -q -- '--leak-out'; then
   HAS_LEAK_OUT=1
 fi
 
-echo "[gen] tool=$TOOL  out_base=$OUT_BASE_DIR  min_size=$MIN_SIZE  live_mode='$LIVE_MODE'  csv=$DO_CSV  leak_out=$HAS_LEAK_OUT"
+# 组装透传参数
+TOOL_ARGS=()
+TOOL_ARGS+=($LIVE_MODE --min-size "$MIN_SIZE")
+if (( TIME_ASC == 1 )); then
+  TOOL_ARGS+=(--time-asc)
+fi
+
+echo "[gen] tool=$TOOL  out_base=$OUT_BASE_DIR  min_size=$MIN_SIZE  live_mode='$LIVE_MODE'  csv=$DO_CSV  leak_out=$HAS_LEAK_OUT  time_asc=$TIME_ASC"
 
 # 逐个文件处理
 for BIN in "${ARGS[@]}"; do
@@ -75,7 +86,6 @@ for BIN in "${ARGS[@]}"; do
   # 取纯文件名 & 去扩展名
   base="$(basename -- "$BIN")"
   name="$base"               # 目录名=完整文件名，保留 .bin.1
-  # 如果文件刚好以 .bin 结尾（没有轮次后缀），可以可选地去掉 .bin：
   [[ "$name" == *.bin ]] && name="${name%.bin}"
 
   # 目录组织：out/<name>/{summary,leaks,csv}
@@ -93,23 +103,21 @@ for BIN in "${ARGS[@]}"; do
 
   if (( HAS_LEAK_OUT == 1 )); then
     # 方式一：优先使用 --leak-out（更干净）
-    # 1) 只生成泄漏明细（静音其余输出）
-    "$TOOL" "$BIN" $LIVE_MODE --min-size "$MIN_SIZE" --leak-out "$LEAKS_FILE" >/dev/null 2>/dev/null
-
-    # 2) 只生成汇总/统计（不含泄漏明细）
-    "$TOOL" "$BIN" $LIVE_MODE --min-size "$MIN_SIZE" --leak-out /dev/null >/dev/null 2>"$SUMMARY_FILE"
+    "$TOOL" "$BIN" "${TOOL_ARGS[@]}" --leak-out "$LEAKS_FILE" >/dev/null 2>/dev/null
+    "$TOOL" "$BIN" "${TOOL_ARGS[@]}" --leak-out /dev/null >/dev/null 2>"$SUMMARY_FILE"
   else
     # 方式二：不支持 --leak-out，生成带泄漏的完整 summary，再从中提取泄漏段
     TMP_SUM="$SUM_DIR/.summary_full.tmp"
-    "$TOOL" "$BIN" $LIVE_MODE --min-size "$MIN_SIZE" >/dev/null 2>"$TMP_SUM"
+    "$TOOL" "$BIN" "${TOOL_ARGS[@]}" >/dev/null 2>"$TMP_SUM"
 
     # 保存完整 summary（含泄漏）
     cp "$TMP_SUM" "$SUMMARY_FILE"
 
-    # 从完整 summary 中抽取泄漏段：从行开头匹配 "== leaks" 起，到空行后的 "Hint:" 或文件结尾
+    # 从完整 summary 中抽取泄漏段
     awk '
       BEGIN{inleak=0}
       /^== leaks \(unfreed blocks\)/{inleak=1; print; next}
+      /^== leaks .* order=/{inleak=1; print; next}
       /^Hint: addr2line/ && inleak==1 {print; inleak=0; next}
       inleak==1 {print}
     ' "$TMP_SUM" > "$LEAKS_FILE" || true
@@ -120,6 +128,11 @@ for BIN in "${ARGS[@]}"; do
   # CSV（可选）
   if (( DO_CSV == 1 )); then
     "$TOOL" "$BIN" --min-size "$MIN_SIZE" --csv "$CSV_FILE" >/dev/null 2>/dev/null || true
+
+    # 若你也想让 CSV 按系统时间升序（wall_ns 第3列）：
+    # if (( TIME_ASC == 1 )) && [[ -s "$CSV_FILE" ]]; then
+    #   { head -n1 "$CSV_FILE"; tail -n +2 "$CSV_FILE" | sort -t, -k3,3n; } > "$CSV_FILE.tmp" && mv "$CSV_FILE.tmp" "$CSV_FILE"
+    # fi
   fi
 
   echo "[ok ] wrote:"

@@ -107,12 +107,24 @@ typedef struct {
     uint64_t ptr, size, ts_ns, wall_ns, ra;
     uint32_t tid;
 } LeakRow;
+
+/* 默认：size 降序；时间较晚者在后（ts 升序） */
 static int cmp_leak_desc(const void* a,const void* b){
     const LeakRow* x=(const LeakRow*)a; const LeakRow* y=(const LeakRow*)b;
     if (y->size > x->size) return 1;
     if (y->size < x->size) return -1;
+    if (x->ts_ns < y->ts_ns) return -1;   /* 更早的在前 */
     if (x->ts_ns > y->ts_ns) return 1;
+    return 0;
+}
+/* 新增：按时间升序 */
+static int cmp_leak_time_asc(const void* a,const void* b){
+    const LeakRow* x=(const LeakRow*)a; const LeakRow* y=(const LeakRow*)b;
     if (x->ts_ns < y->ts_ns) return -1;
+    if (x->ts_ns > y->ts_ns) return 1;
+    /* 次关键字：size 降序（方便看大块） */
+    if (y->size > x->size) return 1;
+    if (y->size < x->size) return -1;
     return 0;
 }
 
@@ -123,16 +135,18 @@ typedef struct {
     int live_all;          /* print all leaks */
     long live_top;         /* print top-N leaks (default 20) */
     uint64_t min_size;     /* only list/aggregate leaks >= min_size */
+    int sort_time;         /* --time-asc: sort leaks by time ascending */
 } Opts;
 
 static void usage(const char* prog){
     fprintf(stderr,
-        "Usage: %s memhook.bin [--csv out.csv] [--live-all] [--live-top N] [--min-size N]\n"
+        "Usage: %s memhook.bin [--csv out.csv] [--live-all] [--live-top N] [--min-size N] [--time-asc]\n"
         "  --csv out.csv   Write per-record CSV: idx,ts_ns,wall_ns,wall_time,tid,op,ptr,arg,retaddr\n"
         "                  (v1 files have wall_ns=0 & wall_time=\"-\")\n"
         "  --live-all      Print ALL unfreed (leak) blocks in summary\n"
         "  --live-top N    Print top N leaks by size (default 20)\n"
-        "  --min-size N    Only count/list leaks with size >= N bytes (default 0)\n",
+        "  --min-size N    Only count/list leaks with size >= N bytes (default 0)\n"
+        "  --time-asc      Sort leaks by allocation time ascending\n",
         prog);
 }
 static int parse_long(const char* s, long* out){
@@ -158,6 +172,7 @@ int main(int argc,char**argv){
         if(strcmp(argv[i],"--live-all")==0){ opt.live_all=1; continue; }
         if(strcmp(argv[i],"--live-top")==0 && i+1<argc){ long v; if(parse_long(argv[++i],&v)) opt.live_top=v; continue; }
         if(strcmp(argv[i],"--min-size")==0 && i+1<argc){ uint64_t v; if(parse_u64(argv[++i],&v)) opt.min_size=v; continue; }
+        if(strcmp(argv[i],"--time-asc")==0){ opt.sort_time=1; continue; }
         usage(argv[0]); return 1;
     }
 
@@ -215,7 +230,7 @@ int main(int argc,char**argv){
                     "%ld,%" PRIu64 ",%" PRIu64 ",%s,%u,%s,0x%016" PRIx64 ",%" PRIu64 ",0x%016" PRIx64 "\n",
                     idx, r1.ts_ns, wall_ns, wfull, r1.tid, op_name(r1.op), r1.ptr, r1.arg, r1.retaddr);
         }
-        
+
         if(r1.op<4) cnt[r1.op]++;
         if(r1.op==0){ add_live(r1.ptr,r1.arg,r1.tid,r1.ts_ns,wall_ns,r1.retaddr); total_malloc+=r1.arg; }
         else if(r1.op==3){ add_live(r1.ptr,r1.arg,r1.tid,r1.ts_ns,wall_ns,r1.retaddr); total_calloc+=r1.arg; }
@@ -236,7 +251,7 @@ int main(int argc,char**argv){
     LeakRow* rows = (LeakRow*)malloc(cap*sizeof(LeakRow));
     if(!rows) cap=nrows=0;
     for(Live* p=live_head;p;p=p->next){
-        if(p->size < opt.min_size) continue;
+        if(p->size < ((uint64_t)opt.min_size)) continue;
         live_bytes += p->size; live_blocks++;
         if(rows){
             if(nrows==cap){
@@ -249,7 +264,12 @@ int main(int argc,char**argv){
             rows[nrows].ts_ns=p->ts_ns; rows[nrows].wall_ns=p->wall_ns; rows[nrows].ra=p->ra; nrows++;
         }
     }
-    if(rows && nrows>1) qsort(rows,nrows,sizeof(LeakRow),cmp_leak_desc);
+    if(rows && nrows>1){
+        if(opt.sort_time)
+            qsort(rows,nrows,sizeof(LeakRow),cmp_leak_time_asc);
+        else
+            qsort(rows,nrows,sizeof(LeakRow),cmp_leak_desc);
+    }
 
     /* summary */
     char hm[32],hc[32],hr[32],hf[32],hl[32];
@@ -262,20 +282,23 @@ int main(int argc,char**argv){
         "counts: malloc=%" PRIu64 " free=%" PRIu64 " realloc=%" PRIu64 " calloc=%" PRIu64 "\n"
         "total malloc=%s calloc=%s realloc(new)=%s freed=%s\n"
         "live=%s in %" PRIu64 " blocks  (min-size filter: >= %" PRIu64 "B)\n"
-        "span=%s\n",
+        "span=%s\n"
+        "order=%s\n",
         nrec, (long)sz,
         cnt[0],cnt[1],cnt[2],cnt[3],
         human(total_malloc,hm),human(total_calloc,hc),human(total_realloc_new,hr),human(total_freed,hf),
-        human(live_bytes,hl), live_blocks, opt.min_size,
-        span_str
+        human(live_bytes,hl), live_blocks, (uint64_t)opt.min_size,
+        span_str,
+        opt.sort_time ? "time-asc" : "size-desc"
     );
 
     /* print leak details（保持长指针，去掉 ts_ns，追加 t 与 wall） */
     if(nrows>0){
         size_t limit = opt.live_all ? nrows : (opt.live_top>0 ? (size_t)opt.live_top : 0);
         if(limit>nrows) limit=nrows;
-        fprintf(stderr, "\n== leaks (unfreed blocks) %s ==\n",
-                opt.live_all? "[ALL]":"[TOP]");
+        fprintf(stderr, "\n== leaks (unfreed blocks) %s, order=%s ==\n",
+                opt.live_all? "[ALL]":"[TOP]",
+                opt.sort_time ? "time-asc" : "size-desc");
         for(size_t i=0;i<limit;i++){
             char hs[32], tshort[24], wfull[32];
             tsns_to_short_ms(rows[i].ts_ns, first_ts, tshort);
