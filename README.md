@@ -53,3 +53,17 @@ Export binary logs, dump to text/CSV
 Compatible with C/C++ projects and embedded Linux
 兼容 C/C++ 项目及嵌入式 Linux 环境
 
+
+
+# 1) 编译
+chmod +x scripts/build.sh scripts/gen_reports.sh
+scripts/build.sh
+
+分析records.csv
+python3 csv_analyze_memhook.py  out/memhook_oom_572_up19273ms/csv/records.csv  --out out_report --downsample 200 --top 50 --approx-mem 2e6
+
+按时间输出，summary和leaks
+scripts/gen_reports.sh --live-all --time-asc  memhook_oom_572_up19273ms.bin
+
+默认输出
+scripts/gen_reports.sh --live-all  memhook_oom_572_up19273ms.bin
